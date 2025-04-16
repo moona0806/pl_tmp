@@ -48,6 +48,8 @@ class Canvas(QtWidgets.QWidget):
     _fill_drawing = False
     temp_mask_data=None
     temp_shape_data=None
+    box_start_point = None  # To store the starting point for box annotation
+    box_annotation_mode = False  # Flag to indicate box annotation mode
 
     def __init__(self, *args, **kwargs):
         self.epsilon = kwargs.pop("epsilon", 10.0)
@@ -270,6 +272,15 @@ class Canvas(QtWidgets.QWidget):
 
         is_shift_pressed = ev.modifiers() & QtCore.Qt.ShiftModifier
 
+        # Box annotation mode with Shift+RightClick drag
+        if self.box_annotation_mode and self.box_start_point is not None:
+            self.overrideCursor(CURSOR_DRAW)
+            self.line.shape_type = "rectangle"
+            self.line.points = [self.box_start_point, pos]
+            self.line.point_labels = [1, 1]
+            self.update()
+            return
+
         if self.drawing() and self.createMode == "patch_annotation" and is_shift_pressed:
             self.overrideCursor(CURSOR_DRAW)
             if not self.current:
@@ -457,6 +468,17 @@ class Canvas(QtWidgets.QWidget):
         if ev.button() == QtCore.Qt.XButton1:
             self.mouseBackButtonClicked.emit()
         is_shift_pressed = ev.modifiers() & QtCore.Qt.ShiftModifier
+        
+        # Start box annotation mode with Shift+RightClick
+        if ev.button() == QtCore.Qt.RightButton and is_shift_pressed:
+            # Initialize box annotation mode
+            self.box_start_point = pos
+            self.box_annotation_mode = True
+            self.line.shape_type = "rectangle"
+            self.line.points = [pos, pos]
+            self.line.point_labels = [1, 1]
+            return
+        
         if ev.button() == QtCore.Qt.LeftButton:
             if self.drawing():
                 if self.current:
@@ -564,7 +586,7 @@ class Canvas(QtWidgets.QWidget):
             return
 
         painter = QPainter(self.pixmap)
-        pen = QPen(QColor(0, 255, 0), 1, Qt.SolidLine) 
+        pen = QPen(QColor(0, 255, 0), 3, Qt.SolidLine) 
         painter.setPen(pen)
 
         width = self.pixmap.width()
@@ -580,6 +602,20 @@ class Canvas(QtWidgets.QWidget):
         painter.end()
 
     def mouseReleaseEvent(self, ev):
+        # Handle box annotation mode release with Shift+RightClick
+        if self.box_annotation_mode and self.box_start_point is not None:
+            # Only process if it was a right button release
+            if ev.button() == QtCore.Qt.RightButton:
+                end_point = self.transformPos(ev.localPos() if QT5 else ev.posF())
+                # Create and annotate with box
+                self.annotateWithBox(self.box_start_point, end_point)
+                
+                # Reset box annotation mode
+                self.box_annotation_mode = False
+                self.box_start_point = None
+                self.update()
+                return
+                
         if ev.button() == QtCore.Qt.RightButton:
             menu = self.menus[len(self.selectedShapesCopy) > 0]
             self.restoreCursor()
@@ -842,7 +878,7 @@ class Canvas(QtWidgets.QWidget):
             pen = QtGui.QPen(QtGui.QColor(0, 255, 0, 76))
         else:
             pen = QtGui.QPen(QtGui.QColor(0, 255, 0, 255))
-        pen.setWidth(1)
+        pen.setWidth(3)
         p.setPen(pen)
         width = self.pixmap.width()
         height = self.pixmap.height()
@@ -1172,7 +1208,7 @@ class Canvas(QtWidgets.QWidget):
                     self.update()
         
         if ev.key() == QtCore.Qt.Key_Space:
-            self.shapes_visible = False
+            self.shapes_visible = not self.shapes_visible
             self.update()
 
         if self.drawing():
@@ -1237,6 +1273,12 @@ class Canvas(QtWidgets.QWidget):
     def keyReleaseEvent(self, ev):
         modifiers = ev.modifiers()
         if ev.key() == QtCore.Qt.Key_Shift:
+            # Reset box annotation mode if Shift is released
+            if self.box_annotation_mode:
+                self.box_annotation_mode = False
+                self.box_start_point = None
+                self.update()
+                
             if self.createMode == "patch_annotation" and self.current:
                 self.finalise()
         if ev.key() == QtCore.Qt.Key_X:
@@ -1247,7 +1289,7 @@ class Canvas(QtWidgets.QWidget):
                     self.intensity_text = "BLURRY"
                 self.classAndIntensityChanged.emit(self.class_text, self.intensity_text)
         if ev.key() == QtCore.Qt.Key_Space:
-            self.shapes_visible = True
+            self.shapes_visible = not self.shapes_visible
             self.update()
             
         if self.drawing():
@@ -1297,6 +1339,14 @@ class Canvas(QtWidgets.QWidget):
         self.update()
 
     def loadPixmap(self, pixmap, clear_shapes=True):
+        # Store current mask_label before changing pixmap
+        old_mask_label = None
+        old_previous_masks = None
+        if hasattr(self, 'mask_label') and self.mask_label:
+            old_mask_label = [row[:] for row in self.mask_label]
+        if hasattr(self, 'previous_masks') and self.previous_masks:
+            old_previous_masks = dict(self.previous_masks)
+            
         self.pixmap = pixmap
         
         if self._ai_model:
@@ -1305,8 +1355,34 @@ class Canvas(QtWidgets.QWidget):
             )
         if clear_shapes:
             self.shapes = []
-        # self.drawGridOnPixmap()
-        self.mask_label = self.initialize_mask(self.patch_width, self.patch_height)
+            # Reset mask_label when shapes are cleared
+            self.mask_label = self.initialize_mask(self.patch_width, self.patch_height)
+            self.previous_masks = {}  # Clear previous masks
+        else:
+            # Preserve mask_label when shapes are preserved (e.g., during brightness/contrast changes)
+            if old_mask_label and len(old_mask_label) == self.patch_height and len(old_mask_label[0]) == self.patch_width:
+                self.mask_label = old_mask_label
+            else:
+                self.mask_label = self.initialize_mask(self.patch_width, self.patch_height)
+                
+                # If dimensions changed, reapply annotations from shapes to new mask_label
+                if self.shapes:
+                    for shape in self.shapes:
+                        if shape.shape_type == "patch_annotation" and shape.label:
+                            mask = shape_to_mask(
+                                (self.pixmap.height(), self.pixmap.width()), shape.points,
+                                shape_type="patch_annotation", patch_width=self.patch_width,
+                                patch_height=self.patch_height
+                            )
+                            if mask.sum() != 0:
+                                indices = np.argwhere(mask)
+                                for idx in indices:
+                                    self.set_mask_label(idx[0], idx[1], shape.label)
+            
+            # Preserve previous_masks if shapes are preserved
+            if old_previous_masks and not clear_shapes:
+                self.previous_masks = old_previous_masks
+        
         self.update()
 
     def loadShapes(self, shapes, replace=True):
@@ -1341,3 +1417,73 @@ class Canvas(QtWidgets.QWidget):
 
     def get_mask_label(self):
         return self.mask_label
+
+    def annotateWithBox(self, start_point, end_point):
+        """Annotate patches that are inside or touch the box/line formed by the two points."""
+        if not start_point or not end_point:
+            return
+            
+        # Create rectangle from the two points
+        x1, y1 = start_point.x(), start_point.y()
+        x2, y2 = end_point.x(), end_point.y()
+        
+        # In case the points are equal or form a line (no area)
+        if x1 == x2 or y1 == y2:
+            # Handle as a line annotation
+            shape = Shape(shape_type="patch_annotation")
+            if x1 == x2 and y1 == y2:
+                # Single point - just add the point
+                shape.addPoint(QtCore.QPointF(x1, y1))
+                shape.close()
+            else:
+                # Line - add points along the line
+                # Calculate the number of points to add based on the line length
+                if x1 == x2:  # Vertical line
+                    step = (y2 - y1) / max(abs(y2 - y1) / 5, 1)
+                    for y in np.arange(y1, y2 + step, step):
+                        shape.addPoint(QtCore.QPointF(x1, y))
+                else:  # Horizontal line
+                    step = (x2 - x1) / max(abs(x2 - x1) / 5, 1)
+                    for x in np.arange(x1, x2 + step, step):
+                        shape.addPoint(QtCore.QPointF(x, y1))
+                shape.close()
+        else:
+            # Create a full rectangle
+            # Normalize coordinates (in case of dragging from bottom to top or right to left)
+            x_min, x_max = min(x1, x2), max(x1, x2)
+            y_min, y_max = min(y1, y2), max(y1, y2)
+            
+            # Create a shape with points at the corners and inside the rectangle
+            shape = Shape(shape_type="patch_annotation")
+            
+            # Add points at corners and at regular intervals inside the rectangle
+            x_step = (x_max - x_min) / max(min(10, self.patch_width / 2), 1)
+            y_step = (y_max - y_min) / max(min(10, self.patch_height / 2), 1)
+            
+            for x in np.arange(x_min, x_max + x_step, x_step):
+                for y in np.arange(y_min, y_max + y_step, y_step):
+                    shape.addPoint(QtCore.QPointF(x, y))
+            
+            shape.close()
+        
+        # Apply current class/intensity if set
+        if hasattr(self, 'class_text') and hasattr(self, 'intensity_text') and self.class_text and self.intensity_text:
+            if self.class_text.startswith("class") and len(self.class_text) > 5:
+                class_digit = self.class_text[5]
+                
+                # Determine intensity character
+                intensity_char = 'q'  # Default to 'q' (BLURRY)
+                if self.intensity_text == "BLURRY":
+                    intensity_char = 'q'
+                elif self.intensity_text == "BLOCKAGE":
+                    intensity_char = 'w'
+                
+                # Only set label if it's a valid class
+                if class_digit.isdigit() and int(class_digit) > 0:
+                    shape.label = f"{class_digit}{intensity_char}"
+        
+        # Add the shape to the list and store shapes
+        self.shapes.append(shape)
+        self.storeShapes()
+        self.newShape.emit('patch_anno')
+        self.update()

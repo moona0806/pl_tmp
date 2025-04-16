@@ -13,17 +13,22 @@ class BrightnessContrastDialog(QtWidgets.QDialog):
         self.setModal(True)
         self.setWindowTitle("Brightness/Contrast")
 
-        # Create sliders and spinboxes
         self.slider_brightness = self._create_slider()
         self.slider_contrast = self._create_slider()
+        
+        # Add numeric input fields for brightness and contrast
         self.spinbox_brightness = self._create_spinbox()
         self.spinbox_contrast = self._create_spinbox()
+        
+        # Connect sliders to spinboxes
+        self.slider_brightness.valueChanged.connect(lambda value: self.spinbox_brightness.setValue(value))
+        self.slider_contrast.valueChanged.connect(lambda value: self.spinbox_contrast.setValue(value))
+        
+        # Connect spinboxes to sliders
+        self.spinbox_brightness.valueChanged.connect(lambda value: self.slider_brightness.setValue(value))
+        self.spinbox_contrast.valueChanged.connect(lambda value: self.slider_contrast.setValue(value))
 
-        # Connect spinboxes to update sliders
-        self.spinbox_brightness.valueChanged.connect(self._brightness_spinbox_changed)
-        self.spinbox_contrast.valueChanged.connect(self._contrast_spinbox_changed)
-
-        # Create layouts for each parameter with slider and spinbox side by side
+        # Create horizontal layouts for slider+spinbox pairs
         brightness_layout = QtWidgets.QHBoxLayout()
         brightness_layout.addWidget(self.slider_brightness)
         brightness_layout.addWidget(self.spinbox_brightness)
@@ -31,8 +36,7 @@ class BrightnessContrastDialog(QtWidgets.QDialog):
         contrast_layout = QtWidgets.QHBoxLayout()
         contrast_layout.addWidget(self.slider_contrast)
         contrast_layout.addWidget(self.spinbox_contrast)
-
-        # Main form layout
+        
         formLayout = QtWidgets.QFormLayout()
         formLayout.addRow(self.tr("Brightness"), brightness_layout)
         formLayout.addRow(self.tr("Contrast"), contrast_layout)
@@ -42,32 +46,9 @@ class BrightnessContrastDialog(QtWidgets.QDialog):
         self.img = img
         self.callback = callback
 
-    def _brightness_spinbox_changed(self, value):
-        self.slider_brightness.blockSignals(True)
-        self.slider_brightness.setValue(value)
-        self.slider_brightness.blockSignals(False)
-        self.onNewValue(value)
-
-    def _contrast_spinbox_changed(self, value):
-        self.slider_contrast.blockSignals(True)
-        self.slider_contrast.setValue(value)
-        self.slider_contrast.blockSignals(False)
-        self.onNewValue(value)
-
     def onNewValue(self, value):
         brightness = self.slider_brightness.value() / 50.0
         contrast = self.slider_contrast.value() / 50.0
-
-        # Update spinboxes if they don't match sliders
-        if self.spinbox_brightness.value() != self.slider_brightness.value():
-            self.spinbox_brightness.blockSignals(True)
-            self.spinbox_brightness.setValue(self.slider_brightness.value())
-            self.spinbox_brightness.blockSignals(False)
-            
-        if self.spinbox_contrast.value() != self.slider_contrast.value():
-            self.spinbox_contrast.blockSignals(True)
-            self.spinbox_contrast.setValue(self.slider_contrast.value())
-            self.spinbox_contrast.blockSignals(False)
 
         img = self.img
         img = PIL.ImageEnhance.Brightness(img).enhance(brightness)
@@ -88,6 +69,5 @@ class BrightnessContrastDialog(QtWidgets.QDialog):
         spinbox = QtWidgets.QSpinBox()
         spinbox.setRange(0, 150)
         spinbox.setValue(50)
-        spinbox.setSuffix("")
-        spinbox.setFixedWidth(70)
+        spinbox.valueChanged.connect(self.onNewValue)
         return spinbox
